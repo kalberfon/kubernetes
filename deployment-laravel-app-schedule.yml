@@ -1,0 +1,169 @@
+
+# Create a pod containing the PHP-FPM application (my-php-app)
+# and nginx, each mounting the `shared-files` volume to their
+# respective /var/www/html directories.
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: laravel-app
+  namespace: my-namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: laravel-app-selector
+  template:
+    metadata:
+      labels:
+        app: laravel-app-selector
+    spec:
+      volumes:
+        # Create the shared files volume to be used in both pods
+        - name: shared-files
+          emptyDir: {}
+
+        # Add the ConfigMap we declared above as a volume for the pod
+        - name: nginx-config-volume
+          configMap:
+            name: nginx-config
+
+      containers:
+        # Our PHP-FPM application
+        - image: {{image}}
+          name: app
+          env:
+            - name: APP_URL
+              value: "---url---"
+            - name: DB_CONNECTION
+              value: "mysql"
+            - name: DB_HOST
+              value: "---host---"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_DATABASE
+              value: "--- database ---"
+            - name: DB_USERNAME
+              value: "--- username ---"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-secrets
+                  key: database-password
+            - name: BROADCAST_DRIVER
+              value: "pusher"
+            - name: CACHE_DRIVER
+              value: "file"
+            - name: QUEUE_CONNECTION
+              value: "sync"
+            - name: SESSION_DRIVER
+              value: "file"
+            - name: SESSION_LIFETIME
+              value: "120"
+
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "cp -r /app/. /var/www/html && php /var/www/html/artisan migrate --force && chmod -Rf 777 /var/www/html/storage && php /var/www/html/artisan storage:link"]
+
+
+        # Our nginx container, which uses the configuration declared above,
+        # along with the files shared with the PHP-FPM app.
+        - image: nginx:1.17
+          name: nginx
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+            - name: nginx-config-volume
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+        - name: queue
+          image: {{image}}
+          env:
+            - name: APP_URL
+              value: "---url---"
+            - name: DB_CONNECTION
+              value: "mysql"
+            - name: DB_HOST
+              value: "---host---"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_DATABASE
+              value: "--- database ---"
+            - name: DB_USERNAME
+              value: "--- username ---"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-secrets
+                  key: database-password
+            - name: BROADCAST_DRIVER
+              value: "pusher"
+            - name: CACHE_DRIVER
+              value: "file"
+            - name: QUEUE_CONNECTION
+              value: "sync"
+            - name: SESSION_DRIVER
+              value: "file"
+            - name: SESSION_LIFETIME
+              value: "120"
+
+          command: ["supervisord"]
+          args: ["--nodaemon", "--configuration", "/etc/supervisord.conf"]
+
+---
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: laravel-app-schedule
+  namespace: my-namespace
+spec:
+  schedule: "*/3 * * * *"
+  jobTemplate:
+    spec:
+      completions: 1
+      parallelism: 1
+      template:
+        spec:
+          containers:
+            - name: my-schedule
+              image: {{image}}
+
+              env:
+                - name: APP_URL
+                  value: "---url---"
+                - name: DB_CONNECTION
+                  value: "mysql"
+                - name: DB_HOST
+                  value: "---host---"
+                - name: DB_PORT
+                  value: "3306"
+                - name: DB_DATABASE
+                  value: "--- database ---"
+                - name: DB_USERNAME
+                  value: "--- username ---"
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-secrets
+                      key: database-password
+                - name: BROADCAST_DRIVER
+                  value: "pusher"
+                - name: CACHE_DRIVER
+                  value: "file"
+                - name: QUEUE_CONNECTION
+                  value: "sync"
+                - name: SESSION_DRIVER
+                  value: "file"
+                - name: SESSION_LIFETIME
+                  value: "120"
+
+              command:
+                - /bin/sh
+                - -c
+                - php /app/artisan schedule:run
+          restartPolicy: OnFailure
